@@ -14,3 +14,7 @@
 
 # inherit from qcom-common
 include device/sony/qcom-common/BoardConfigCommon.mk
+
+# Bionic
+MALLOC_IMPL := dlmalloc
+
