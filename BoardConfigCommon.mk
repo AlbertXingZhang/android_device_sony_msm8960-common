@@ -18,3 +18,5 @@ include device/sony/qcom-common/BoardConfigCommon.mk
 # Bionic
 MALLOC_IMPL := dlmalloc
 
+# Lights HAL
+TARGET_PROVIDES_LIBLIGHT := true
