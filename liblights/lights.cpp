@@ -62,7 +62,12 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct light_state_t g_notification;
 static struct light_state_t g_battery;
 static int g_attention = 0;
-int is_screen_off = 0;
+#ifdef DEVICE_HAYABUSA
+// For sole use of controlling Xperia logo
+// Thus I added tricks to this variable
+// DUANG! if you use it elsewhere
+int last_screen_brightness = 0;
+#endif
 
 /**
  * device methods
@@ -187,25 +192,12 @@ set_light_backlight(struct light_device_t* dev,
     int brightness = rgb_to_brightness(state);
     int max_brightness = get_max_brightness();
 
-    if (brightness > 0) {
 #ifdef ENABLE_GAMMA_CORRECTION
-        brightness = brightness_apply_gamma(brightness);
+    brightness = brightness_apply_gamma(brightness);
 #endif
-        brightness = max_brightness * brightness / 255;
-        if (brightness < LCD_BRIGHTNESS_MIN)
-            brightness = LCD_BRIGHTNESS_MIN;
-
-#ifdef DEVICE_HAYABUSA
-        if (is_screen_off) {
-            // no need to set this repeatedly when screen is already on
-            write_int(LOGO_BACKLIGHT_PATTERN_FILE, 0);
-            write_int(LOGO_BACKLIGHT2_PATTERN_FILE, 0);
-        }
-#endif
-        is_screen_off = 0;
-    } else {
-        is_screen_off = 1;
-    }
+    brightness = max_brightness * brightness / 255;
+    if (brightness != 0 && brightness < LCD_BRIGHTNESS_MIN)
+        brightness = LCD_BRIGHTNESS_MIN;
 
 #ifdef LOG_BRIGHTNESS
     ALOGV("[%s] brightness %d max_brightness %d", __FUNCTION__, brightness, max_brightness);
@@ -215,8 +207,18 @@ set_light_backlight(struct light_device_t* dev,
     err |= write_int (LCD_BACKLIGHT_FILE, brightness);
     err |= write_int (LCD_BACKLIGHT2_FILE, brightness);
 #ifdef DEVICE_HAYABUSA
-    err |= write_int (LOGO_BACKLIGHT_FILE, brightness);
-    err |= write_int (LOGO_BACKLIGHT2_FILE, brightness);
+    if (brightness == 0 && is_lit(&g_notification)
+            && g_notification.flashMode == LIGHT_FLASH_TIMED) {
+        // Applies when turning off screen in lockscreen while there's notif
+        // We don't want to write 0 (which will stop the logo from blinking)
+        write_int(LOGO_BACKLIGHT_FILE, max_brightness);
+        write_int(LOGO_BACKLIGHT2_FILE, max_brightness);
+    } else {
+        write_int(LOGO_BACKLIGHT_FILE, brightness);
+        write_int(LOGO_BACKLIGHT2_FILE, brightness);
+    }
+
+    last_screen_brightness = brightness;
 #endif
     pthread_mutex_unlock(&g_lock);
 
@@ -224,7 +226,7 @@ set_light_backlight(struct light_device_t* dev,
 }
 
 static void
-clear_lights_locked(int clear_logo)
+clear_lights_locked()
 {
     write_string(PATTERN_DATA_FILE, "0");
     write_int(PATTERN_USE_SOFTDIM_FILE, 0);
@@ -238,14 +240,10 @@ clear_lights_locked(int clear_logo)
     write_int(PWR_BLUE_BRIGHTNESS_FILE, 0);
     write_int(PWR_BLUE_USE_PATTERN_FILE, 0);
 #ifdef DEVICE_HAYABUSA
-    write_int(LOGO_BACKLIGHT_PATTERN_FILE, 0);        
+    write_int(LOGO_BACKLIGHT_FILE, last_screen_brightness);
+    write_int(LOGO_BACKLIGHT2_FILE, last_screen_brightness);
+    write_int(LOGO_BACKLIGHT_PATTERN_FILE, 0);
     write_int(LOGO_BACKLIGHT2_PATTERN_FILE, 0);
-    if (clear_logo && is_screen_off) {
-        ALOGV("Clear logo, is_screen_off=%d", is_screen_off);
-        write_int(LOGO_BACKLIGHT_FILE, 0);
-        write_int(LOGO_BACKLIGHT2_FILE, 0);
-    }
-    ALOGV("is_screen_off=%d", is_screen_off);
 #endif
 }
 
@@ -284,8 +282,10 @@ set_speaker_light_locked(struct light_device_t* dev,
 {
     int alpha, red, green, blue;
     int onMS, offMS;
-    int pattern_duration = 1, pattern_dim_time = 50, pattern_data_dec = 0, pattern_delay = 0, pattern_use_softdim = 0;
     unsigned int colorRGB;
+    int pattern_duration = 1, pattern_dim_time = 50, pattern_data_dec = 0,
+            pattern_delay = 0, pattern_use_softdim = 0;
+
     char pattern_data[11];
 
     switch (state->flashMode) {
@@ -325,17 +325,21 @@ set_speaker_light_locked(struct light_device_t* dev,
             pattern_duration = 1;
             pattern_dim_time = get_dim_time(offMS > onMS ? onMS : offMS);
             pattern_data_on_bit(1000.0, onMS, offMS, &pattern_data_dec);
-            pattern_delay = totalMS - 1000 < 1000 ? (offMS > 3 * onMS ? 1 : 0) : (totalMS - 1000) / 1000;
-            // When the duration is 1s and offMS is 3 times longer than onMS, (eg on 300ms, off 1000ms)
-            // if we only use pattern_data to describe the off milliseconds (700ms)
-            // the off time will appear too short (although 700ms is more close to desired 1000ms than +1s delay)
+            pattern_delay = totalMS - 1000 < 1000 ?
+                (offMS > 3 * onMS ? 1 : 0) :
+                (totalMS - 1000) / 1000;
+            // When offMS is 3 times longer than onMS (eg on 300ms, off 1000ms)
+            // if we only use pattern_data to describe off time (700ms)
+            // it will appear too short.
+            // (although 700ms is more close to desired 1000ms than +1s delay)
             // So we force 1s delay in such cases.
         } else {
             pattern_duration = 8;
             pattern_dim_time = get_dim_time(offMS > onMS ? onMS : offMS);
             pattern_data_on_bit(8000.0, onMS, offMS, &pattern_data_dec);
             pattern_delay = totalMS - 8000 < 8000 ? 0 : (totalMS - 8000) / 1000;
-            // The above trick is not needed here since it won't make much visible difference
+            // The above trick is not needed here
+            // since it won't make much visible difference
             // when offMS > 3 * onMS here.
         }
     } else {
@@ -344,11 +348,13 @@ set_speaker_light_locked(struct light_device_t* dev,
 
     snprintf(pattern_data, 11, "0x%X", pattern_data_dec);
 
-    clear_lights_locked(0);
+    clear_lights_locked();
 
 #ifdef LOG_PARAM
-    ALOGD("set_speaker_light_locked About to write: _data=%s, _usesoftdim=%d, _duration=%d, _delay=%d, _dimtime=%d\n",
-            pattern_data, pattern_use_softdim, pattern_duration, pattern_delay, pattern_dim_time);
+    ALOGD("set_speaker_light_locked About to write: _data=%s, _usesoftdim=%d,"
+            " _duration=%d, _delay=%d, _dimtime=%d\n",
+            pattern_data, pattern_use_softdim,
+            pattern_duration, pattern_delay, pattern_dim_time);
 #endif
 
     if (pattern_use_softdim) {
@@ -364,6 +370,11 @@ set_speaker_light_locked(struct light_device_t* dev,
         write_int(PWR_BLUE_BRIGHTNESS_FILE, blue);
         write_int(PWR_BLUE_USE_PATTERN_FILE, 1);
 #ifdef DEVICE_HAYABUSA
+        // This 255 may be something like last_screen_brightness==0?255:l_s_b
+        // But since everything is working as expected
+        // (LED won't be triggered when screen is on,
+        // including new notif arriving in lockscreen)
+        // It's likely that I'll never visit this again...
         write_int(LOGO_BACKLIGHT_FILE, 255);
         write_int(LOGO_BACKLIGHT2_FILE, 255);
         write_int(LOGO_BACKLIGHT_PATTERN_FILE, 1);        
@@ -386,8 +397,8 @@ handle_speaker_battery_locked(struct light_device_t* dev)
     else if(is_lit(&g_battery))
         set_speaker_light_locked(dev, &g_battery);
     else
-        // No light required. Clear logo backlight.
-        clear_lights_locked(1);
+        // No light required. Clear everything.
+        clear_lights_locked();
 }
 
 static int
