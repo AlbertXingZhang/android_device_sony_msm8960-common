@@ -207,10 +207,11 @@ set_light_backlight(struct light_device_t* dev,
     err |= write_int (LCD_BACKLIGHT_FILE, brightness);
     err |= write_int (LCD_BACKLIGHT2_FILE, brightness);
 #ifdef DEVICE_HAYABUSA
-    if (brightness == 0 && is_lit(&g_notification)
-            && g_notification.flashMode == LIGHT_FLASH_TIMED) {
+    if (brightness == 0 && is_lit(&g_notification)) {
         // Applies when turning off screen in lockscreen while there's notif
         // We don't want to write 0 (which will stop the logo from blinking)
+        // Pattern file is taken care of in set_speaker_light_locked
+        // Only brightness is needed here
         write_int(LOGO_BACKLIGHT_FILE, max_brightness);
         write_int(LOGO_BACKLIGHT2_FILE, max_brightness);
     } else {
