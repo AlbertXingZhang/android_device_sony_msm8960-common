@@ -192,12 +192,14 @@ set_light_backlight(struct light_device_t* dev,
     int brightness = rgb_to_brightness(state);
     int max_brightness = get_max_brightness();
 
+    if (brightness > 0) {
 #ifdef ENABLE_GAMMA_CORRECTION
-    brightness = brightness_apply_gamma(brightness);
+        brightness = brightness_apply_gamma(brightness);
 #endif
-    brightness = max_brightness * brightness / 255;
-    if (brightness != 0 && brightness < LCD_BRIGHTNESS_MIN)
-        brightness = LCD_BRIGHTNESS_MIN;
+        brightness = max_brightness * brightness / 255;
+        if (brightness < LCD_BRIGHTNESS_MIN)
+            brightness = LCD_BRIGHTNESS_MIN;
+    }
 
 #ifdef LOG_BRIGHTNESS
     ALOGV("[%s] brightness %d max_brightness %d", __FUNCTION__, brightness, max_brightness);
